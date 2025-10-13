@@ -1,26 +1,35 @@
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+html, body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--surface-1);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+
+:root{
+  /* Original-UI (neutral-grau, Tailwind-ähnlich) */
+  --text:       #6b7280; /* gray-500 */
+  --muted:      #9ca3af; /* gray-400 */
+  --icon:       #6b7280; /* gray-500 */
+  --border:     #e5e7eb; /* gray-200 */
+  --surface-0:  #ffffff; /* weiß */
+  --surface-1:  #fafafa; /* gray-50 */
+  --surface-2:  #f3f4f6; /* gray-100 */
+  --today-bg:   #eff6ff; /* light blue */
+  --chip-bg:    #f3f4f6; /* gray-100 */
+  --chip-text:  #374151; /* gray-700 */
+  --hover-bg:   #f3f4f6; /* gray-100 */
+  --active-bd:  #e5e7eb; /* gray-200 */
+  --focus-ring: rgba(59,130,246,0.35); /* dezentes blau */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Projekt-Utilities */
+.card{
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
 }
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+.muted{ color: var(--muted); }
