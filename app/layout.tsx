@@ -11,6 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="de">
       <body>
         <header
+        id="app-header"
           style={{
             display: "grid",
             gridTemplateColumns: "auto 1fr auto",

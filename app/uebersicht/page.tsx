@@ -1,21 +1,31 @@
-// app/uebersicht/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
 import CalendarContinuous from "@/components/CalendarContinuous";
 import HorsesList from "@/components/HorsesList";
 
-const HEADER = 56; // px: Höhe deiner Kopfzeile/Nav
-
 export default function UebersichtPage() {
+  const [headerH, setHeaderH] = useState(56); // Fallback
+
+  useEffect(() => {
+    const el = document.getElementById("app-header");
+    const recalc = () => setHeaderH(el ? el.offsetHeight : 56);
+    recalc();
+    window.addEventListener("resize", recalc);
+    return () => window.removeEventListener("resize", recalc);
+  }, []);
+
   return (
     <div
       style={{
         position: "fixed",
-        top: HEADER,      // Abstand nach oben
+        top: headerH,
         left: 0,
         right: 0,
         bottom: 0,
-        padding: 16,     // gleichmäßiger Rand
+        padding: 16,              // gleicher Rand oben/unten/links/rechts
         boxSizing: "border-box",
-        overflow: "hidden",
+        overflow: "hidden",       // Seite selbst scrollt nicht
       }}
     >
       <div
@@ -24,8 +34,6 @@ export default function UebersichtPage() {
           display: "grid",
           gridTemplateColumns: "320px 1fr",
           gap: 16,
-          alignItems: "stretch",
-          minHeight: 0,
         }}
       >
         <div style={{ minHeight: 0 }}>

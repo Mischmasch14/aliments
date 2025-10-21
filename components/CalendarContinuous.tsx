@@ -1,23 +1,31 @@
 "use client";
-
-import { getISOWeek } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  addDays, addWeeks, addMonths, format,
-  isSameMonth, isToday, startOfMonth, startOfWeek,
+  addDays,
+  addWeeks,
+  addMonths,
+  format,
+  isSameMonth,
+  isToday,
+  startOfMonth,
+  startOfWeek,
 } from "date-fns";
 import { de } from "date-fns/locale";
 import { demoEvents } from "@/lib/events";
 
-type DayInfo = { date: Date; key: string; inMonth: boolean; today: boolean; evCount: number; };
+type DayInfo = {
+  date: Date;
+  key: string;
+  inMonth: boolean;
+  today: boolean;
+  evCount: number;
+};
 type Mode = "day" | "week" | "month";
 
-const DAY_CELL = 100;
-const WEEK_GAP = 8;
-const TODAY_BG = "var(--today-bg)";
+const DAY_MIN = 99;
+const WEEK_GAP = 10;
+const TODAY_BG = "#eff6ff";
 const HOUR_ROW = 56;
-const VISIBLE_ROWS = 5;
-const MAX_VISIBLE_MONTH_EVENTS = 2;
 
 function isoDateLocal(d: Date) {
   const y = d.getFullYear();
@@ -25,37 +33,109 @@ function isoDateLocal(d: Date) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-function scrollHourIntoView(node: HTMLDivElement | null, hour: number) {
-  if (!node) return;
-  const target = hour * HOUR_ROW - 2 * HOUR_ROW;
-  const max = node.scrollHeight - node.clientHeight;
-  node.scrollTop = Math.max(0, Math.min(target, max));
-}
 
 export default function CalendarContinuous() {
+  // Refs
   const monthScrollRef = useRef<HTMLDivElement | null>(null);
   const dayScrollRef   = useRef<HTMLDivElement | null>(null);
   const weekScrollRef  = useRef<HTMLDivElement | null>(null);
   const lastScrollTop  = useRef(0);
-  const isAutoScroll   = useRef(false);
 
+  // State
   const [mode, setMode] = useState<Mode>("month");
   const baseWeek = startOfWeek(new Date(), { weekStartsOn: 1 });
-  const [headWeeks, setHeadWeeks] = useState(0);
-  const [tailWeeks, setTailWeeks] = useState(12);
-
+  const [headWeeks, setHeadWeeks] = useState(-8);
+  const [tailWeeks, setTailWeeks] = useState(16);
   const [currentIso, setCurrentIso] = useState<string>(isoDateLocal(new Date()));
   const [selectedKey, setSelectedKey] = useState<string>(isoDateLocal(new Date()));
+  const [padTop, setPadTop] = useState(12);
+  const [padBottom, setPadBottom] = useState(12);
 
-  const eventsByDay = useMemo(() => {
-    const m = new Map<string, any[]>();
-    for (const ev of demoEvents) {
-      const k = new Date(ev.startUtc).toISOString().slice(0, 10);
-      m.set(k, [...(m.get(k) ?? []), ev]);
+  // --- Events (lokal + Demo) ---
+  type NewEventForm = { title: string; date: string; start: string; end: string; allDay: boolean };
+  const EV_KEY = "aliments.events";
+  const [events, setEvents] = useState<Array<{title:string; startUtc:string; endUtc:string; allDay?:boolean}>>([]);
+  const [showNew, setShowNew] = useState(false);
+  const [form, setForm] = useState<NewEventForm>({
+    title:"", date: isoDateLocal(new Date()), start:"10:00", end:"11:00", allDay:false
+  });
+
+  const allEvents = useMemo(() => {
+    const raw = (typeof window !== "undefined" && localStorage.getItem(EV_KEY)) || "[]";
+    let user: any[] = [];
+    try { user = JSON.parse(raw) } catch {}
+    return [...(demoEvents ?? []), ...user];
+  }, [events]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(EV_KEY);
+      setEvents(raw ? JSON.parse(raw) : []);
+    } catch {
+      setEvents([]);
     }
-    return m;
   }, []);
 
+  function saveEvent(e: {title:string; date:string; start:string; end:string; allDay:boolean}) {
+    const startUtc = new Date(`${e.date}T${e.start}:00`).toISOString();
+    const endUtc   = new Date(`${e.date}T${e.end}:00`).toISOString();
+    const next = [...events, { title: e.title, startUtc, endUtc, allDay: e.allDay }];
+    localStorage.setItem(EV_KEY, JSON.stringify(next));
+    setEvents(next);
+  }
+
+  // Helpers
+  function utcDayKey(d: Date) {
+    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+      .toISOString()
+      .slice(0, 10);
+  }
+  function layoutEvent(startUtc: string, endUtc: string) {
+    const s = new Date(startUtc);
+    const e = new Date(endUtc);
+    const startMin = s.getHours() * 60 + s.getMinutes();
+    const endMin   = e.getHours() * 60 + e.getMinutes();
+    const durMin   = Math.max(15, endMin - startMin);
+    return { top: (startMin / 60) * HOUR_ROW, height: (durMin / 60) * HOUR_ROW };
+  }
+
+  // --- Popup: "+N weitere" (Monatsansicht) ---
+  // (WICHTIG: NACH allEvents definieren)
+  const [moreForDay, setMoreForDay] = useState(false);
+  const [moreForDate, setMoreForDate] = useState<Date | null>(null);
+
+  const popupEvents = useMemo(() => {
+    if (!moreForDate) return [];
+    const key = utcDayKey(moreForDate);
+    return allEvents
+      .filter(ev => utcDayKey(new Date(ev.startUtc)) === key)
+      .sort((a, b) => new Date(a.startUtc).getTime() - new Date(b.startUtc).getTime());
+  }, [moreForDate, allEvents]);
+
+  function openDayPopup(date: Date) {
+    setMoreForDate(date);
+    setMoreForDay(true);
+  }
+  function closeDayPopup() {
+    setMoreForDay(false);
+    setMoreForDate(null);
+  }
+  function fmtHM(iso: string) {
+    const dt = new Date(iso);
+    return dt.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Events count per day (für Monatsraster)
+  const eventsByDay = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const ev of allEvents) {
+      const k = new Date(ev.startUtc).toISOString().slice(0, 10);
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [allEvents]);
+
+  // Monatsraster
   const monthWeeks: DayInfo[][] = useMemo(() => {
     const arr: DayInfo[][] = [];
     for (let w = headWeeks; w < tailWeeks; w++) {
@@ -66,10 +146,11 @@ export default function CalendarContinuous() {
         const d = addDays(weekStart, i);
         const key = d.toISOString().slice(0, 10);
         row.push({
-          date: d, key,
+          date: d,
+          key,
           inMonth: isSameMonth(d, monthRef),
           today: isToday(d),
-          evCount: (eventsByDay.get(key) ?? []).length,
+          evCount: eventsByDay.get(key) ?? 0,
         });
       }
       arr.push(row);
@@ -77,79 +158,179 @@ export default function CalendarContinuous() {
     return arr;
   }, [baseWeek, headWeeks, tailWeeks, eventsByDay]);
 
+  // Header (Monatstitel) bestimmen
   function updateHeaderSymmetricContentCoords() {
     const el = monthScrollRef.current;
     if (!el) return;
-
-    const containerRect = el.getBoundingClientRect();
-    const firstWeek = el.querySelector<HTMLDivElement>("[data-week-start]");
+    const firstWeek = el.querySelector<HTMLDivElement>('[data-week-start]');
     if (!firstWeek) return;
-
     const rowH = firstWeek.getBoundingClientRect().height;
-    const scrollTop = el.scrollTop;
-
-    const secondRowTopContent = scrollTop + rowH + WEEK_GAP;
-    const bandMidContent = secondRowTopContent + rowH / 2;
-
+    const padTopVal = parseFloat(getComputedStyle(el).paddingTop || "0") || 0;
+    const anchorY = el.scrollTop + padTopVal + rowH + WEEK_GAP + rowH / 2;
     const anchors = Array.from(
       el.querySelectorAll<HTMLDivElement>('[data-day="1"][data-date]')
     );
     if (anchors.length === 0) return;
-
     let bestIso: string | null = null;
     let bestY = -Infinity;
-
+    const contTop = el.getBoundingClientRect().top;
     for (const a of anchors) {
       const r = a.getBoundingClientRect();
-      const centerContent = scrollTop + (r.top - containerRect.top) + r.height / 2;
-      if (centerContent <= bandMidContent && centerContent > bestY) {
-        bestY = centerContent; bestIso = a.dataset.date ?? null;
+      const centerY = el.scrollTop + (r.top - contTop) + r.height / 2;
+      if (centerY <= anchorY && centerY > bestY) {
+        bestY = centerY;
+        bestIso = a.dataset.date ?? null;
+      }
+    }
+    if (!bestIso && anchors[0]) bestIso = anchors[0].dataset.date ?? null;
+    if (bestIso) setCurrentIso(bestIso);
+  }
+  function updateHeader() {
+    const el = monthScrollRef.current;
+    if (!el) return;
+    const cont = el.getBoundingClientRect();
+    const firstWeek = el.querySelector<HTMLDivElement>("[data-week-start]");
+    if (!firstWeek) return;
+    const rowH = firstWeek.getBoundingClientRect().height;
+    const st = el.scrollTop;
+    const secondRowTopContent = st + rowH + WEEK_GAP;
+    const bandMid = secondRowTopContent + rowH / 2;
+    const anchors = Array.from(el.querySelectorAll<HTMLDivElement>('[data-day="1"][data-date]'));
+    if (anchors.length === 0) return;
+    let bestIso: string | null = null;
+    let bestY = -Infinity;
+    for (const a of anchors) {
+      const r = a.getBoundingClientRect();
+      const centerContent = st + (r.top - cont.top) + r.height / 2;
+      if (centerContent <= bandMid && centerContent > bestY) {
+        bestY = centerContent;
+        bestIso = a.dataset.date ?? null;
       }
     }
     if (!bestIso) {
-      let minY = Infinity; let iso: string | null = null;
+      let minY = Infinity;
       for (const a of anchors) {
         const r = a.getBoundingClientRect();
-        const centerContent = scrollTop + (r.top - containerRect.top) + r.height / 2;
-        if (centerContent < minY) { minY = centerContent; iso = a.dataset.date ?? null; }
+        const centerContent = st + (r.top - cont.top) + r.height / 2;
+        if (centerContent < minY) {
+          minY = centerContent;
+          bestIso = a.dataset.date ?? null;
+        }
       }
-      bestIso = iso;
     }
     if (bestIso && bestIso !== currentIso) setCurrentIso(bestIso);
   }
-
   function onMonthScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
     const st = el.scrollTop;
     const goingUp = st < lastScrollTop.current;
     lastScrollTop.current = st;
-
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200)
-      setTailWeeks((t) => t + 8);
-
-    if (el.scrollTop < 120 && goingUp) {
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) setTailWeeks(t => t + 8);
+    const topThreshold = padTop + WEEK_GAP;
+    if (el.scrollTop <= topThreshold) {
       const prev = el.scrollHeight;
-      setHeadWeeks((h) => h - 8);
+      setHeadWeeks(h => h - 8);
       requestAnimationFrame(() => {
         const n = monthScrollRef.current;
         if (!n) return;
         const diff = n.scrollHeight - prev;
         n.scrollTop += diff;
+        lastScrollTop.current = n.scrollTop;
         updateHeaderSymmetricContentCoords();
+        recalcMonthPad();
       });
-    } else {
-      updateHeaderSymmetricContentCoords();
+      return;
     }
+    updateHeaderSymmetricContentCoords();
   }
+
+  // Padding berechnen
+  function recalcMonthPad() {
+    const el = monthScrollRef.current;
+    if (!el) return;
+    const firstRow = el.querySelector<HTMLDivElement>('[data-week-start]');
+    if (!firstRow) return;
+    const rowH = firstRow.getBoundingClientRect().height;
+    const visible = el.clientHeight;
+    const need = 5 * rowH + 4 * WEEK_GAP;
+    const free = Math.max(0, visible - need);
+    const top = Math.floor(free / 2);
+    const bottom = free - top;
+    setPadTop(top);
+    setPadBottom(bottom);
+  }
+  function scrollDateIntoMonthRow(target: Date, rowIndexFromTop = 0, pxOffset = 0) {
+    const el = monthScrollRef.current;
+    if (!el) return;
+    const key = isoDateLocal(target);
+    const cell = el.querySelector<HTMLDivElement>(`[data-date="${key}"]`);
+    if (!cell) return;
+    let row: HTMLElement | null = cell;
+    while (row && row !== el && !row.hasAttribute("data-week-start")) {
+      row = row.parentElement as HTMLElement | null;
+    }
+    if (!row || row === el) return;
+    const contRect = el.getBoundingClientRect();
+    const rowRect  = row.getBoundingClientRect();
+    const rowTopWithin = rowRect.top - contRect.top;
+    const firstRow = el.querySelector<HTMLDivElement>('[data-week-start]');
+    const rowH = firstRow ? firstRow.getBoundingClientRect().height : rowRect.height;
+    const targetTopWithin = padTop + rowIndexFromTop * (rowH + WEEK_GAP) + pxOffset;
+    el.scrollTop += (rowTopWithin - targetTopWithin);
+    updateHeaderSymmetricContentCoords();
+    lastScrollTop.current = el.scrollTop;
+  }
+  function scrollToDate(target: Date) {
+    const key = isoDateLocal(target);
+    if (mode !== "month") {
+      setSelectedKey(key);
+      return;
+    }
+    setSelectedKey(key);
+    requestAnimationFrame(() => {
+      scrollDateIntoMonthRow(new Date(key), 1, 1);
+    });
+  }
+
+  // Auto-Startpositionen
+  useEffect(() => {
+    if (mode !== "day") return;
+    const nowHour = new Date().getHours();
+    requestAnimationFrame(() => {
+      const n = dayScrollRef.current;
+      if (!n) return;
+      const target = nowHour * HOUR_ROW - 2 * HOUR_ROW;
+      const max = n.scrollHeight - n.clientHeight;
+      n.scrollTop = Math.max(0, Math.min(target, max));
+    });
+  }, [mode, selectedKey]);
+
+  useEffect(() => {
+    if (mode !== "week") return;
+    const nowHour = new Date().getHours();
+    requestAnimationFrame(() => {
+      const n = weekScrollRef.current;
+      if (!n) return;
+      const target = nowHour * HOUR_ROW - 2 * HOUR_ROW;
+      const max = n.scrollHeight - n.clientHeight;
+      n.scrollTop = Math.max(0, Math.min(target, max));
+    });
+  }, [mode, baseWeek]);
 
   useEffect(() => {
     if (mode !== "month") return;
-    const id = requestAnimationFrame(updateHeaderSymmetricContentCoords);
-    return () => cancelAnimationFrame(id);
-  }, [mode, monthWeeks.length]);
+    const el = monthScrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      recalcMonthPad();
+      requestAnimationFrame(() => {
+        scrollDateIntoMonthRow(new Date(selectedKey), 1, -2);
+        lastScrollTop.current = el.scrollTop;
+      });
+    });
+  }, [mode]);
 
-  const monthLabel = format(addMonths(new Date(currentIso), 1), "MMMM yyyy", { locale: de });
-
+  // Titel
   const hours = Array.from({ length: 24 }, (_, h) => h);
   const selectedDate = useMemo(() => new Date(selectedKey), [selectedKey]);
   const weekStartSelected = useMemo(
@@ -160,107 +341,7 @@ export default function CalendarContinuous() {
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStartSelected, i)),
     [weekStartSelected]
   );
-
-  function findWeekRow(el: HTMLDivElement, cell: HTMLDivElement) {
-    let row: HTMLElement | null = cell;
-    while (row && row !== el && !(row instanceof HTMLElement && row.hasAttribute("data-week-start"))) {
-      row = row.parentElement as HTMLElement | null;
-    }
-    return row as HTMLDivElement | null;
-  }
-  function targetTopWithin(el: HTMLDivElement, rowH: number) {
-    const blockH = 5 * rowH + 4 * WEEK_GAP;
-    return Math.max(0, Math.floor((el.clientHeight - blockH) / 2));
-  }
-  function scrollRowTo(el: HTMLDivElement, row: HTMLDivElement, topWithin: number) {
-    const containerRect = el.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-    const rowTopWithin = rowRect.top - containerRect.top;
-    isAutoScroll.current = true;
-    el.scrollTop = el.scrollTop + (rowTopWithin - topWithin);
-    lastScrollTop.current = el.scrollTop;
-    requestAnimationFrame(() => { isAutoScroll.current = false; updateHeaderSymmetricContentCoords(); });
-  }
-  function scrollDateCentered(d: Date) {
-    const el = monthScrollRef.current; if (!el) return;
-    const key = isoDateLocal(d);
-    const cell = el.querySelector<HTMLDivElement>(`[data-date="${key}"]`); if (!cell) return;
-    const row = findWeekRow(el, cell); if (!row) return;
-    const rowH = row.getBoundingClientRect().height;
-    scrollRowTo(el, row, targetTopWithin(el, rowH));
-  }
-  function scrollMonthFirstCentered(monthDate: Date) {
-    const el = monthScrollRef.current; if (!el) return;
-    const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
-    const key = isoDateLocal(first);
-    const cell = el.querySelector<HTMLDivElement>(`[data-date="${key}"]`); if (!cell) return;
-    const row = findWeekRow(el, cell); if (!row) return;
-    const rowH = row.getBoundingClientRect().height;
-    scrollRowTo(el, row, targetTopWithin(el, rowH));
-  }
-
-  function scrollToDate(target: Date) {
-    const key = isoDateLocal(target);
-    if (mode !== "month") { setSelectedKey(key); return; }
-    setSelectedKey(key);
-    setHeadWeeks(h => h - 8);
-    setTailWeeks(t => t + 8);
-    requestAnimationFrame(() => {
-      const el = monthScrollRef.current; if (!el) return;
-      const cell = el.querySelector<HTMLDivElement>(`[data-date="${key}"]`); if (!cell) return;
-      const row = findWeekRow(el, cell); if (!row) return;
-      const rowH = row.getBoundingClientRect().height;
-      const desiredTop = targetTopWithin(el, rowH) + rowH + WEEK_GAP; // zweite Zeile
-      scrollRowTo(el, row, desiredTop);
-      requestAnimationFrame(() => { scrollRowTo(el, row, desiredTop); });
-    });
-  }
-  function goPrev() {
-    if (mode === "day") {
-      setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), -1)));
-    } else if (mode === "week") {
-      setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), -7)));
-    } else {
-      const anchor = new Date(selectedKey);
-      const targetMonth = addMonths(anchor, -1);
-      const first = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
-      setHeadWeeks(h => h - 16);
-      setSelectedKey(isoDateLocal(first));
-      requestAnimationFrame(() => { requestAnimationFrame(() => { scrollMonthFirstCentered(first); }); });
-    }
-  }
-  function goNext() {
-    if (mode === "day") {
-      setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), 1)));
-    } else if (mode === "week") {
-      setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), 7)));
-    } else {
-      const anchor = new Date(selectedKey);
-      const targetMonth = addMonths(anchor, 1);
-      const first = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
-      setTailWeeks(t => t + 16);
-      setSelectedKey(isoDateLocal(first));
-      requestAnimationFrame(() => { requestAnimationFrame(() => { scrollMonthFirstCentered(first); }); });
-    }
-  }
-
-  useEffect(() => {
-    if (mode !== "day") return;
-    const nowHour = new Date().getHours();
-    requestAnimationFrame(() => { scrollHourIntoView(dayScrollRef.current, nowHour); });
-  }, [mode, selectedKey]);
-  useEffect(() => {
-    if (mode !== "week") return;
-    const nowHour = new Date().getHours();
-    requestAnimationFrame(() => { scrollHourIntoView(weekScrollRef.current, nowHour); });
-  }, [mode, weekStartSelected]);
-  useEffect(() => {
-    if (mode !== "month") return;
-    const el = monthScrollRef.current;
-    if (el) lastScrollTop.current = el.scrollTop;
-    requestAnimationFrame(() => { scrollDateCentered(new Date(selectedKey)); });
-  }, [mode, selectedKey]);
-
+  const monthLabel = format(new Date(currentIso), "MMMM yyyy", { locale: de });
   const leftTitle =
     mode === "day"
       ? format(selectedDate, "EEEE, d. MMMM yyyy", { locale: de })
@@ -268,109 +349,217 @@ export default function CalendarContinuous() {
       ? format(weekStartSelected, "MMMM yyyy", { locale: de })
       : monthLabel;
 
+  // Render
   return (
-    <div className="calendar card" style={{
-      padding: "0 12px 12px",
-      display: "flex", flexDirection: "column", height: "100%",
-    }}>
+    <div
+      className="calendar card"
+      style={{
+        padding: "0 12px 12px",
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        position: "relative",
+      }}
+    >
       {/* Kopfzeile */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr auto 1fr",
-        alignItems: "center",
-        margin: "8px 0",
-        color: "var(--text)"
-      }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto 1fr",
+          alignItems: "center",
+          margin: "8px 0",
+        }}
+      >
         <div style={{ fontWeight: 600 }}>{leftTitle}</div>
-
         <div style={{ justifySelf: "center", display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={goPrev}
-            aria-label="Zurück"
-            style={{ padding: "6px 10px", border: `1px solid var(--border)`, borderRadius: 8, background: "var(--surface-0)", cursor: "pointer", color:"var(--text)" }}>
-            ←
-          </button>
+          <button onClick={() => {
+            if (mode === "day") setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), -1)));
+            else if (mode === "week") setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), -7)));
+            else {
+              const anchor = new Date(currentIso);
+              const target = startOfMonth(addMonths(anchor, -1));
+              setHeadWeeks(h => h - 8);
+              setSelectedKey(isoDateLocal(target));
+              requestAnimationFrame(() => {
+                recalcMonthPad();
+                requestAnimationFrame(() => {
+                  scrollDateIntoMonthRow(target, 0, 1);
+                  const el = monthScrollRef.current;
+                  if (el) lastScrollTop.current = el.scrollTop;
+                });
+              });
+            }
+          }}>←</button>
 
-          <div role="tablist" aria-label="Ansicht" style={{
-            display: "inline-flex",
-            background: "var(--surface-2)",
-            border: `1px solid var(--border)`,
-            borderRadius: 9999,
-            padding: 4, gap: 4,
-          }}>
-            {(["day","week","month"] as Mode[]).map((m) => {
+          <div
+            role="tablist"
+            aria-label="Ansicht"
+            style={{
+              display: "inline-flex",
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              borderRadius: 9999,
+              padding: 4,
+              gap: 4,
+            }}
+          >
+            {(["day", "week", "month"] as Mode[]).map((m) => {
               const active = mode === m;
               const label = m === "day" ? "Tag" : m === "week" ? "Woche" : "Monat";
               return (
-                <button key={m} onClick={() => setMode(m)} role="tab" aria-selected={active}
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  role="tab"
+                  aria-selected={active}
                   style={{
-                    minWidth: 72, padding: "6px 10px", border: "none", borderRadius: 9999,
-                    background: active ? "var(--surface-0)" : "transparent",
+                    minWidth: 72,
+                    padding: "6px 10px",
+                    border: "none",
+                    borderRadius: 9999,
+                    background: active ? "white" : "transparent",
+                    color: "var(--text)",
                     boxShadow: active ? "0 1px 1px rgba(0,0,0,0.04)" : "none",
                     cursor: "pointer",
                     fontWeight: 600,
-                    color: active ? "var(--text)" : "var(--muted)",
-                    borderLeft: active ? `1px solid var(--border)` : "none",
-                    borderRight: active ? `1px solid var(--border)` : "none",
-                  }}>
+                  }}
+                >
                   {label}
                 </button>
               );
             })}
           </div>
 
-          <button onClick={goNext}
-            aria-label="Weiter"
-            style={{ padding: "6px 10px", border: `1px solid var(--border)`, borderRadius: 8, background: "var(--surface-0)", cursor: "pointer", color:"var(--text)" }}>
-            →
-          </button>
+          <button onClick={() => {
+            if (mode === "day") setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), 1)));
+            else if (mode === "week") setSelectedKey(isoDateLocal(addDays(new Date(selectedKey), 7)));
+            else {
+              const anchor = new Date(currentIso);
+              const target = startOfMonth(addMonths(anchor, 1));
+              setTailWeeks(t => t + 8);
+              setSelectedKey(isoDateLocal(target));
+              requestAnimationFrame(() => {
+                recalcMonthPad();
+                requestAnimationFrame(() => {
+                  scrollDateIntoMonthRow(target, 0, 1);
+                  const el = monthScrollRef.current;
+                  if (el) lastScrollTop.current = el.scrollTop;
+                });
+              });
+            }
+          }}>→</button>
         </div>
+
+        {/* Neuer Termin Modal */}
+        {showNew && (
+          <div
+            onClick={() => setShowNew(false)}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.25)",
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              paddingTop: 24,
+              zIndex: 10,
+            }}
+          >
+            <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: 360, padding: 16 }}>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>Neuer Termin</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                <input
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  placeholder="Titel"
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}
+                />
+                <input
+                  type="date"
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}
+                />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <input
+                    type="time"
+                    value={form.start}
+                    onChange={(e) => setForm({ ...form, start: e.target.value })}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}
+                  />
+                  <input
+                    type="time"
+                    value={form.end}
+                    onChange={(e) => setForm({ ...form, end: e.target.value })}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}
+                  />
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text)" }}>
+                  <input
+                    type="checkbox"
+                    checked={form.allDay}
+                    onChange={(e) => setForm({ ...form, allDay: e.target.checked })}
+                  />
+                  Ganztägig
+                </label>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button
+                    onClick={() => setShowNew(false)}
+                    style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer" }}
+                  >
+                    Abbrechen
+                  </button>
+                  <button
+                    onClick={() => { saveEvent(form); setShowNew(false); }}
+                    style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Speichern
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div style={{ justifySelf: "end", display:"flex", gap:8 }}>
           <button
             onClick={() => scrollToDate(new Date())}
-            style={{
-              padding: "8px 12px",
-              border: `1px solid var(--border)`,
-              borderRadius: 8,
-              background: "var(--surface-0)",
-              cursor: "pointer",
-              color: "var(--text)",
-              fontWeight: 600,
-            }}
+            style={{ padding:"8px 12px", border:"1px solid var(--border)", borderRadius:8, background:"white", cursor:"pointer", color:"var(--text)" }}
           >
             Heute
           </button>
-
-          {/* Plus-Button → deinen Handler einfügen */}
           <button
-            onClick={() => {/* setForm / setShowNew */}}
-            aria-label="Neuen Termin anlegen"
+            onClick={() => {
+              const base = mode === "day" ? new Date(selectedKey) : new Date();
+              setForm({ title:"", date: isoDateLocal(base), start:"10:00", end:"11:00", allDay:false });
+              setShowNew(true);
+            }}
+            aria-label="Neuen Termin"
             style={{
-              width: 36, height: 36,
-              display: "inline-flex", alignItems: "center", justifyContent: "center",
-              border: `1px solid var(--border)`, borderRadius: 9999,
-              background: "var(--surface-0)", cursor: "pointer", color: "var(--icon)",
+              width:36, height:36, display:"inline-flex", alignItems:"center", justifyContent:"center",
+              border:"1px solid var(--border)", borderRadius:9999, background:"white",
+              cursor:"pointer", boxShadow:"0 1px 2px rgba(0,0,0,0.04)"
             }}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M12 5v14M5 12h14" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round"/>
             </svg>
           </button>
         </div>
       </div>
 
-      {/* Kopfleiste */}
+      {/* Wochentagszeile / ToDo */}
       <div className="card" style={{ padding: 8, marginBottom: 8 }}>
         {mode === "day" ? (
-          <div style={{ height: 21, display: "flex", alignItems: "center", gap: 8, overflowX: "auto" }}>
+          <div style={{ height: 21, display: "flex", alignItems: "center" }}>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>To Do</span>
           </div>
         ) : mode === "week" ? (
-          <div style={{ display: "grid", gridTemplateColumns: "48px repeat(7, 1fr)", gap: 0 }}>
-            <div style={{ textAlign: "left", fontSize: 12, color: "var(--muted)", padding: 0, transform: "translateY(1px) translateX(-2px)" }}>
-              KW {getISOWeek(weekStartSelected)}
+          <div style={{ display: "grid", gridTemplateColumns: "48px repeat(7, 1fr)" }}>
+            <div style={{ fontSize: 12, color: "var(--muted)", transform: "translateY(1px) translateX(-2px)" }}>
+              KW {format(weekStartSelected, "I", { locale: de })}
             </div>
-            {weekDays.map((d) => {
+            {Array.from({ length: 7 }, (_, i) => addDays(weekStartSelected, i)).map((d) => {
               const wd = format(d, "EEE", { locale: de }).replace(".", "");
               const num = format(d, "d", { locale: de });
               return (
@@ -382,8 +571,10 @@ export default function CalendarContinuous() {
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((d) => (
-              <div key={d} className="muted" style={{ textAlign: "center" }}>{d}</div>
+            {["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((d) => (
+              <div key={d} className="muted" style={{ textAlign: "center" }}>
+                {d}
+              </div>
             ))}
           </div>
         )}
@@ -396,71 +587,107 @@ export default function CalendarContinuous() {
             ref={monthScrollRef}
             onScroll={onMonthScroll}
             className="card"
-            style={{ height: "100%", overflowY: "auto", padding: 8, paddingRight: 12, paddingBottom: 24 }}
+            style={{
+              height: "100%",
+              overflowY: "auto",
+              paddingLeft: 8,
+              paddingRight: 12,
+              paddingTop: padTop,
+              paddingBottom: padBottom,
+            }}
             aria-label="Kalender (Monat, kontinuierlich)"
           >
             <div style={{ display: "grid", gap: WEEK_GAP }}>
               {monthWeeks.map((row) => (
-                <div key={row[0].key + "_week"} data-week-start={row[0].key}
-                  style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+                <div
+                  key={row[0].key + "_week"}
+                  data-week-start={row[0].key}
+                  style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: WEEK_GAP }}
+                >
                   {row.map((d) => {
                     const isFirstOfMonth = d.date.getDate() === 1;
-                    const bg = isToday(d.date) ? TODAY_BG : "var(--surface-0)";
-                    const list = eventsByDay.get(d.key) ?? [];
-                    const extra = Math.max(0, list.length - MAX_VISIBLE_MONTH_EVENTS);
+                    const bg = isToday(d.date) ? TODAY_BG : "transparent";
+
+                    const dayKey = utcDayKey(d.date);
+                    const dayEvents = allEvents.filter(
+                      ev => utcDayKey(new Date(ev.startUtc)) === dayKey
+                    );
+                    const more = Math.max(0, dayEvents.length - 2);
+
                     return (
                       <div
                         key={d.key}
-                        data-date={d.key}
+                        data-date={isoDateLocal(d.date)}
                         data-day={String(d.date.getDate())}
-                        onClick={() => { setSelectedKey(d.key); setMode("day"); }}
-                        onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)")}
+                        onClick={() => { setSelectedKey(isoDateLocal(d.date)); setMode("day"); }}
                         style={{
+                          position: "relative",
                           padding: 10,
-                          height: DAY_CELL,
+                          minHeight: DAY_MIN,
                           cursor: "pointer",
                           userSelect: "none",
                           background: bg,
                           border: "1px solid var(--border)",
                           borderRadius: 10,
-                          boxShadow: "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
                           outline: "none",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 4,
-                          overflow: "hidden",
-                          position: "relative",
+                          boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
                         }}
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                          <span className="muted" style={{ fontSize: 12, fontWeight: 600, visibility: isFirstOfMonth ? "visible" : "hidden" }}>
+                          <span
+                            className="muted"
+                            style={{ fontSize: 12, fontWeight: 600, visibility: isFirstOfMonth ? "visible" : "hidden" }}
+                          >
                             {isFirstOfMonth ? format(d.date, "MMMM", { locale: de }) : "—"}
                           </span>
                           <span className="muted" style={{ fontSize: 12 }}>{format(d.date, "d")}</span>
                         </div>
 
-                        {list.slice(0, MAX_VISIBLE_MONTH_EVENTS).map((ev: any) => (
-                          <div key={ev.id}
-                            style={{
-                              fontSize: 11, padding: "2px 6px", borderRadius: 6,
-                              background: "var(--chip-bg)", color: "var(--chip-text)",
-                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                            }}>
-                            {ev.title}
-                          </div>
-                        ))}
+                        <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                          {dayEvents.slice(0, 2).map((ev, i) => (
+                            <div
+                              key={i}
+                              style={{
+                                fontSize: 12,
+                                lineHeight: "16px",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                color: "var(--text)",
+                              }}
+                              title={ev.title}
+                            >
+                              {ev.title}
+                            </div>
+                          ))}
+                        </div>
 
-                        {extra > 0 && (
-                          <span style={{
-                            position: "absolute", right: 6, bottom: 6,
-                            fontSize: 11, color: "var(--muted)",
-                            background: "rgba(255,255,255,0.7)",
-                            border: "1px solid var(--border)",
-                            borderRadius: 8, padding: "1px 6px",
-                          }}>
-                            +{extra}
-                          </span>
+                        {more > 0 && (
+                          <button
+                            type="button"
+                            aria-label={`${more} weitere Termine anzeigen`}
+                            onClick={(e) => { e.stopPropagation(); openDayPopup(d.date); }}
+                            style={{
+                              position: "absolute",
+                              right: 6,
+                              bottom: 6,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              height: 18,
+                              minWidth: 22,
+                              padding: "0 6px",
+                              borderRadius: 9999,
+                              background: "var(--surface-2)",
+                              border: "1px solid var(--border)",
+                              fontSize: 11,
+                              lineHeight: 1,
+                              color: "var(--text)",
+                              cursor: "pointer"
+                            }}
+                          >
+                            +{more}
+                          </button>
                         )}
                       </div>
                     );
@@ -473,27 +700,78 @@ export default function CalendarContinuous() {
           <div className="card" style={{ padding: 0, overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}>
             <div ref={weekScrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
               <div style={{ display: "grid", gridTemplateColumns: "48px repeat(7, 1fr)" }}>
+                {/* linke Zeitspalte */}
                 <div style={{ borderRight: "1px solid var(--border)", background: "var(--surface-1)" }}>
                   {hours.map((h) => (
-                    <div key={h} style={{
-                      height: HOUR_ROW, display: "flex", alignItems: "flex-start", justifyContent: "center",
-                      padding: 0, fontSize: 12, color: "var(--muted)", transform: "translateY(-10px)",
-                    }}>
+                    <div
+                      key={h}
+                      style={{
+                        height: HOUR_ROW,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "center",
+                        fontSize: 12,
+                        color: "var(--muted)",
+                        transform: "translateY(-10px)",
+                      }}
+                    >
                       {h === 0 ? "" : `${String(h).padStart(2, "0")}:00`}
                     </div>
                   ))}
                 </div>
-                {weekDays.map((d) => (
-                  <div key={d.toISOString()} style={{ borderRight: "1px solid var(--border)" }}>
-                    {hours.map((h) => (
-                      <div key={h} style={{
-                        height: HOUR_ROW,
-                        borderBottom: "1px solid var(--surface-2)",
-                        background: isToday(d) && h === new Date().getHours() ? TODAY_BG : "transparent",
-                      }}/>
-                    ))}
-                  </div>
-                ))}
+
+                {/* 7 Tages-Spalten */}
+                {weekDays.map((d) => {
+                  const dayKey = utcDayKey(d);
+                  const dayEvents = allEvents.filter(
+                    (ev) => utcDayKey(new Date(ev.startUtc)) === dayKey
+                  );
+                  return (
+                    <div key={d.toISOString()} style={{ borderRight: "1px solid var(--border)", position: "relative" }}>
+                      {hours.map((h) => (
+                        <div
+                          key={h}
+                          style={{
+                            height: HOUR_ROW,
+                            borderBottom: "1px solid var(--surface-2)",
+                            background: isToday(d) && h === new Date().getHours() ? TODAY_BG : "transparent",
+                          }}
+                        />
+                      ))}
+
+                      {dayEvents.map((ev, i) => {
+                        const { top, height } = layoutEvent(ev.startUtc, ev.endUtc);
+                        return (
+                          <div
+                            key={i}
+                            title={ev.title}
+                            style={{
+                              position: "absolute",
+                              left: 6,
+                              right: 6,
+                              top,
+                              height,
+                              borderRadius: 8,
+                              background: "rgba(14,165,233,0.12)",
+                              border: "1px solid #bae6fd",
+                              overflow: "hidden",
+                              display: "flex",
+                              alignItems: "center",
+                              padding: "2px 6px",
+                              fontSize: 12,
+                              color: "var(--text)",
+                              pointerEvents: "auto",
+                            }}
+                          >
+                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {ev.title}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -501,30 +779,125 @@ export default function CalendarContinuous() {
           <div className="card" style={{ padding: 0, overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}>
             <div ref={dayScrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
               <div style={{ display: "grid", gridTemplateColumns: "48px 1fr" }}>
+                {/* linke Zeitspalte */}
                 <div style={{ borderRight: "1px solid var(--border)", background: "var(--surface-1)" }}>
                   {hours.map((h) => (
-                    <div key={h} style={{
-                      height: HOUR_ROW, display: "flex", alignItems: "flex-start", justifyContent: "center",
-                      padding: 0, fontSize: 12, color: "var(--muted)", transform: "translateY(-10px)",
-                    }}>
+                    <div
+                      key={h}
+                      style={{
+                        height: HOUR_ROW,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "center",
+                        fontSize: 12,
+                        color: "var(--muted)",
+                        transform: "translateY(-10px)",
+                      }}
+                    >
                       {h === 0 ? "" : `${String(h).padStart(2, "0")}:00`}
                     </div>
                   ))}
                 </div>
-                <div>
+
+                {/* rechte Tages-Spalte */}
+                <div style={{ position: "relative" }}>
                   {hours.map((h) => (
-                    <div key={h} style={{
-                      height: HOUR_ROW,
-                      borderBottom: "1px solid var(--surface-2)",
-                      background: isToday(selectedDate) && h === new Date().getHours() ? TODAY_BG : "transparent",
-                    }}/>
+                    <div
+                      key={h}
+                      style={{
+                        height: HOUR_ROW,
+                        borderBottom: "1px solid var(--surface-2)",
+                        background:
+                          isToday(new Date(selectedKey)) && h === new Date().getHours() ? TODAY_BG : "transparent",
+                      }}
+                    />
                   ))}
+
+                  {allEvents
+                    .filter((ev) => utcDayKey(new Date(ev.startUtc)) === utcDayKey(new Date(selectedKey)))
+                    .map((ev, i) => {
+                      const { top, height } = layoutEvent(ev.startUtc, ev.endUtc);
+                      return (
+                        <div
+                          key={i}
+                          title={ev.title}
+                          style={{
+                            position: "absolute",
+                            left: 8,
+                            right: 8,
+                            top,
+                            height,
+                            borderRadius: 8,
+                            background: "rgba(14,165,233,0.12)",
+                            border: "1px solid #bae6fd",
+                            overflow: "hidden",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "2px 6px",
+                            fontSize: 12,
+                            color: "var(--text)",
+                            pointerEvents: "auto",
+                          }}
+                        >
+                          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {ev.title}
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {/* Popup: alle Termine des Tages (sortiert) */}
+      {moreForDay && moreForDate && (
+        <div
+          onClick={closeDayPopup}
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            paddingTop: 24,
+            zIndex: 20,
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 360, maxWidth: "90%", maxHeight: "70%", overflowY: "auto", padding: 12, borderRadius: 12 }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>
+                {format(moreForDate, "EEEE, d. MMMM yyyy", { locale: de })}
+              </div>
+              <button onClick={closeDayPopup} aria-label="Schließen"
+                style={{ border: "1px solid var(--border)", borderRadius: 8, background: "white", cursor: "pointer", padding: "2px 8px" }}>
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              {popupEvents.length === 0 && (
+                <div className="muted" style={{ fontSize: 13 }}>Keine weiteren Termine.</div>
+              )}
+              {popupEvents.map((ev, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "64px 1fr", gap: 8, alignItems: "center" }}>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    {ev.allDay ? "ganztägig" : `${fmtHM(ev.startUtc)}–${fmtHM(ev.endUtc)}`}
+                  </div>
+                  <div style={{ fontSize: 14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ev.title}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

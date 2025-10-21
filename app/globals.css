@@ -1,4 +1,5 @@
 html, body {
+  margin: 0;                    /* wichtig für korrekten Rand */
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   line-height: 1.4;
@@ -6,6 +7,8 @@ html, body {
   background: var(--surface-1);
 }
 
+/* optional global saubere Kanten */
+*, *::before, *::after { box-sizing: border-box; }
 
 
 :root{
